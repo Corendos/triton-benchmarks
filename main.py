@@ -8,6 +8,24 @@ def seed_everything(seed):
     random.seed(seed)
     torch.manual_seed(seed)
 
+def make_inputs(batch_size, token_count, num_heads, num_kv_heads, head_size, num_blocks, block_size, max_seq_len, seq_len):
+    max_block_per_seq = max_seq_len // block_size
+
+    query = torch.randn(token_count, num_heads, head_size, dtype=torch.bfloat16)
+    o = torch.zeros_like(query)
+    k = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
+    v = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
+    x = 8
+    key_cache = torch.randn(num_blocks, num_kv_heads, head_size // x, block_size, x, dtype=torch.bfloat16)
+    value_cache = torch.randn(num_blocks, num_kv_heads, head_size, block_size, dtype=torch.bfloat16)
+
+    block_tables = torch.zeros((batch_size, max_block_per_seq), dtype=torch.int32)
+    for i in range(batch_size):
+        block_tables[i][0:seq_len//block_size] = torch.randint(0, num_blocks, (seq_len // block_size,), dtype=torch.int32)
+
+    return query, k, v, key_cache, value_cache, block_tables, o
+
+
 def benchmark_decode_only():
     """Represents a scenario where all the sequence have 1 input token"""
     token_count = 256
@@ -21,30 +39,15 @@ def benchmark_decode_only():
     scale = 0.08838834765
 
     max_seq_len = 8192
-    max_block_per_seq = max_seq_len // block_size
 
     seq_len = 2048
 
-    query = torch.randn(token_count, num_heads, head_size, dtype=torch.bfloat16)
-    o = torch.zeros_like(query)
-    k = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
-    v = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
-    x = 8
-    key_cache = torch.randn(num_blocks, num_kv_heads, head_size // x, block_size, x, dtype=torch.bfloat16)
-    value_cache = torch.randn(num_blocks, num_kv_heads, head_size, block_size, dtype=torch.bfloat16)
-
-    values = torch.arange(0, num_blocks, dtype=torch.long)
-    values = values[torch.randperm(num_blocks)]
-
-    block_tables = torch.zeros((batch_size, max_block_per_seq), dtype=torch.int32)
-    for i in range(batch_size):
-        block_tables[i][0:seq_len//block_size] = torch.randint(0, num_blocks, (seq_len // block_size,), dtype=torch.int32)
+    query, k, v, key_cache, value_cache, block_tables, o = make_inputs(batch_size, token_count, num_heads, num_kv_heads, head_size, num_blocks, block_size, max_seq_len, seq_len)
 
     query_lens = [1 for _ in range(batch_size)]
     context_lens = [seq_len for query_len in query_lens]
-    seqlen_q = torch.tensor(query_lens, dtype=torch.long)
-    seqlen_kv = torch.tensor([a + b for a, b in zip(query_lens, context_lens)], dtype=torch.long)
-    start_loc = torch.cumsum(torch.tensor([0] + query_lens, dtype=torch.long), dim=0)
+    seqlen = torch.tensor([a + b for a, b in zip(query_lens, context_lens)], dtype=torch.int32)
+    start_loc = torch.cumsum(torch.tensor([0] + query_lens, dtype=torch.int32), dim=0, dtype=torch.int32)
 
     # warmup
     chunked_prefill_paged_decode(
@@ -57,7 +60,7 @@ def benchmark_decode_only():
         value_cache,
         block_tables,
         start_loc,
-        seqlen_kv,
+        seqlen,
         max_input_len,
         1.0,
         1.0,
@@ -79,7 +82,7 @@ def benchmark_decode_only():
             value_cache,
             block_tables,
             start_loc,
-            seqlen_kv,
+            seqlen,
             max_input_len,
             1.0,
             1.0,
@@ -107,30 +110,15 @@ def benchmark_prefill_only():
     scale = 0.08838834765
 
     max_seq_len = 8192
-    max_block_per_seq = max_seq_len // block_size
 
     seq_len = 2048
 
-    query = torch.randn(token_count, num_heads, head_size, dtype=torch.bfloat16)
-    o = torch.zeros_like(query)
-    k = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
-    v = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
-    x = 8
-    key_cache = torch.randn(num_blocks, num_kv_heads, head_size // x, block_size, x, dtype=torch.bfloat16)
-    value_cache = torch.randn(num_blocks, num_kv_heads, head_size, block_size, dtype=torch.bfloat16)
-
-    values = torch.arange(0, num_blocks, dtype=torch.long)
-    values = values[torch.randperm(num_blocks)]
-
-    block_tables = torch.zeros((batch_size, max_block_per_seq), dtype=torch.int32)
-    for i in range(batch_size):
-        block_tables[i][0:seq_len//block_size] = torch.randint(0, num_blocks, (seq_len // block_size,), dtype=torch.int32)
+    query, k, v, key_cache, value_cache, block_tables, o = make_inputs(batch_size, token_count, num_heads, num_kv_heads, head_size, num_blocks, block_size, max_seq_len, seq_len)
 
     query_lens = [256 for _ in range(batch_size)]
     context_lens = [seq_len for query_len in query_lens]
-    seqlen_q = torch.tensor(query_lens, dtype=torch.long)
-    seqlen_kv = torch.tensor([a + b for a, b in zip(query_lens, context_lens)], dtype=torch.long)
-    start_loc = torch.cumsum(torch.tensor([0] + query_lens, dtype=torch.long), dim=0)
+    seqlen = torch.tensor([a + b for a, b in zip(query_lens, context_lens)], dtype=torch.int32)
+    start_loc = torch.cumsum(torch.tensor([0] + query_lens, dtype=torch.int32), dim=0, dtype=torch.int32)
 
     # warmup
     chunked_prefill_paged_decode(
@@ -143,7 +131,7 @@ def benchmark_prefill_only():
         value_cache,
         block_tables,
         start_loc,
-        seqlen_kv,
+        seqlen,
         max_input_len,
         1.0,
         1.0,
@@ -165,7 +153,7 @@ def benchmark_prefill_only():
             value_cache,
             block_tables,
             start_loc,
-            seqlen_kv,
+            seqlen,
             max_input_len,
             1.0,
             1.0,
@@ -182,8 +170,8 @@ def benchmark_prefill_only():
 
 def benchmark_highly_skewed():
     """Represents a scenario where all the sequence have 256 input tokens"""
-    token_count = 256 + 255
     batch_size = 256
+    token_count = batch_size - 1 + 256
     num_heads = 32
     num_kv_heads = 8
     head_size = 128
@@ -193,30 +181,15 @@ def benchmark_highly_skewed():
     scale = 0.08838834765
 
     max_seq_len = 8192
-    max_block_per_seq = max_seq_len // block_size
 
     seq_len = 2048
 
-    query = torch.randn(token_count, num_heads, head_size, dtype=torch.bfloat16)
-    o = torch.zeros_like(query)
-    k = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
-    v = torch.randn(token_count, num_kv_heads, head_size, dtype=torch.bfloat16)
-    x = 8
-    key_cache = torch.randn(num_blocks, num_kv_heads, head_size // x, block_size, x, dtype=torch.bfloat16)
-    value_cache = torch.randn(num_blocks, num_kv_heads, head_size, block_size, dtype=torch.bfloat16)
-
-    values = torch.arange(0, num_blocks, dtype=torch.long)
-    values = values[torch.randperm(num_blocks)]
-
-    block_tables = torch.zeros((batch_size, max_block_per_seq), dtype=torch.int32)
-    for i in range(batch_size):
-        block_tables[i][0:seq_len//block_size] = torch.randint(0, num_blocks, (seq_len // block_size,), dtype=torch.int32)
+    query, k, v, key_cache, value_cache, block_tables, o = make_inputs(batch_size, token_count, num_heads, num_kv_heads, head_size, num_blocks, block_size, max_seq_len, seq_len)
 
     query_lens = [256] + [1 for _ in range(batch_size - 1)]
     context_lens = [seq_len for query_len in query_lens]
-    seqlen_q = torch.tensor(query_lens, dtype=torch.long)
-    seqlen_kv = torch.tensor([a + b for a, b in zip(query_lens, context_lens)], dtype=torch.long)
-    start_loc = torch.cumsum(torch.tensor([0] + query_lens, dtype=torch.long), dim=0)
+    seqlen = torch.tensor([a + b for a, b in zip(query_lens, context_lens)], dtype=torch.int32)
+    start_loc = torch.cumsum(torch.tensor([0] + query_lens, dtype=torch.int32), dim=0, dtype=torch.int32)
 
     # warmup
     chunked_prefill_paged_decode(
@@ -229,7 +202,7 @@ def benchmark_highly_skewed():
         value_cache,
         block_tables,
         start_loc,
-        seqlen_kv,
+        seqlen,
         max_input_len,
         1.0,
         1.0,
@@ -251,7 +224,7 @@ def benchmark_highly_skewed():
             value_cache,
             block_tables,
             start_loc,
-            seqlen_kv,
+            seqlen,
             max_input_len,
             1.0,
             1.0,
